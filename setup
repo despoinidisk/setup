@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+#
+#
+#
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PIDS_DIR="$ROOT/.setup-pids"
+LOGS_DIR="$ROOT/.setup-logs"
+mkdir -p "$PIDS_DIR" "$LOGS_DIR"
+
+LOG() {
+    local tag="$1"
+    local stream="$2"
+    shift 2
+    echo "[$tag]" "$@" >&"$stream"
+}
+INFO() { LOG "INFO" 1 "$@"; }
+WARN() { LOG "WARN" 2 "$@"; }
+ERRO() { LOG "ERRO" 2 "$@"; }
+
+usage() {
+    ERRO "Usage: $(basename "$0") {up [-d|--detach]|down|logs}"
+}
+
+_load_env() {
+    if [[ -f "$ROOT/.env" ]]; then
+        set -a
+        # shellcheck disable=SC1091
+        source "$ROOT/.env"
+        set +a
+    fi
+}
+
+_wait_http() {
+    local url="$1"
+    local label="$2"
+    local attempts="${3:-90}"
+    INFO "Waiting for ${label} (${url})..."
+    for _ in $(seq 1 "$attempts"); do
+        if curl -sf "$url" >/dev/null 2>&1; then
+            INFO "${label} is ready"
+            return 0
+        fi
+        sleep 1
+    done
+    ERRO "${label} did not become ready in time (${url})"
+    return 1
+}
+
+_kill_tree() {
+    local pid=$1
+    local children
+    children=$(pgrep -P "$pid" 2>/dev/null) || true
+    for child in $children; do
+        _kill_tree "$child"
+    done
+    kill "$pid" 2>/dev/null || true
+}
+
+_kill_component() {
+    local name="$1"
+    local pidfile="$PIDS_DIR/$name.pid"
+    [[ -f "$pidfile" ]] || return 0
+    local pid
+    pid=$(<"$pidfile")
+    rm -f "$pidfile"
+    if kill -0 "$pid" 2>/dev/null; then
+        INFO "$name stopping (pid $pid)"
+        _kill_tree "$pid"
+        wait "$pid" 2>/dev/null || true
+    fi
+}
+
+_save_pid() {
+    echo "$2" > "$PIDS_DIR/$1.pid"
+}
+
+_start_bg() {
+    local name="$1"
+    local detached="$2"
+    shift 2
+    if [[ "$detached" -eq 1 ]]; then
+        nohup "$@" >"$LOGS_DIR/$name.log" 2>&1 &
+        _save_pid "$name" $!
+        disown $! 2>/dev/null || true
+    else
+        "$@" &
+        _save_pid "$name" $!
+    fi
+}
+
+down() {
+    cd "$ROOT"
+    INFO "Stopping all services..."
+    _kill_component api
+    _kill_component www
+    make db.down
+    INFO "All services stopped."
+}
+
+up() {
+    local detached="${1:-0}"
+    cd "$ROOT"
+
+    trap down EXIT INT TERM
+
+    INFO "Starting MySQL..."
+    make db.up
+    make db.wait
+    make migrate
+
+    _load_env
+    local api_port="${API_PORT:-8000}"
+    local site_port="${SITE_PORT:-3000}"
+    local mysql_port="${MYSQL_PORT:-3306}"
+
+    INFO "Starting API..."
+    _start_bg api "$detached" make api.start
+    _wait_http "http://127.0.0.1:${api_port}/health" "API"
+
+    if [[ ! -d "$ROOT/www/node_modules/next" ]]; then
+        INFO "Installing frontend dependencies..."
+        (cd "$ROOT/www" && npm install)
+    fi
+
+    INFO "Starting Frontend..."
+    _start_bg www "$detached" make www.dev
+    _wait_http "http://127.0.0.1:${site_port}/manager-api/health" "Frontend proxy"
+
+    INFO "All services started."
+    INFO "  API:      http://localhost:${api_port}"
+    INFO "  Frontend: http://localhost:${site_port}"
+    INFO "  MySQL:    localhost:${mysql_port}"
+    INFO ""
+
+    if [[ "$detached" -eq 1 ]]; then
+        trap - EXIT INT TERM
+        INFO "Running in the background."
+        INFO "  Logs: $(basename "$0") logs   (or $LOGS_DIR)"
+        INFO "  Stop: $(basename "$0") down"
+        return 0
+    fi
+
+    INFO "Ctrl+C or '$(basename "$0") down' to stop."
+    wait
+}
+
+logs() {
+    cd "$ROOT"
+    local api_log="$LOGS_DIR/api.log"
+    local www_log="$LOGS_DIR/www.log"
+    if [[ ! -f "$api_log" && ! -f "$www_log" ]]; then
+        ERRO "No setup logs yet. Start with: $(basename "$0") up -d"
+        exit 1
+    fi
+    tail -n 80 -f "$api_log" "$www_log"
+}
+
+case "${1:-}" in
+    up)
+        detach=0
+        shift || true
+        for arg in "$@"; do
+            case "$arg" in
+                -d|--detach|--detached) detach=1 ;;
+                *) usage; exit 1 ;;
+            esac
+        done
+        up "$detach"
+        ;;
+    down) down ;;
+    logs) logs ;;
+    *) usage; exit 1 ;;
+esac
