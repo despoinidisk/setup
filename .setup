@@ -1,7 +1,57 @@
-up() {
+# Example
 
+up() {
+    local detached="${1:-0}"
+    cd "$ROOT"
+
+    trap down EXIT INT TERM
+
+    INFO "Starting MySQL..."
+    make db.up
+    make db.wait
+    make migrate
+
+    _load_env
+    local api_port="${API_PORT:-8000}"
+    local site_port="${SITE_PORT:-3000}"
+    local mysql_port="${MYSQL_PORT:-3306}"
+
+    INFO "Starting API..."
+    _start_bg api "$detached" make api.start
+    _wait_http "http://127.0.0.1:${api_port}/health" "API"
+
+    if [[ ! -d "$ROOT/www/node_modules/next" ]]; then
+        INFO "Installing frontend dependencies..."
+        (cd "$ROOT/www" && npm install)
+    fi
+
+    INFO "Starting Frontend..."
+    _start_bg www "$detached" make www.dev
+    _wait_http "http://127.0.0.1:${site_port}/manager-api/health" "Frontend proxy"
+
+    INFO "All services started."
+    INFO "  API:      http://localhost:${api_port}"
+    INFO "  Frontend: http://localhost:${site_port}"
+    INFO "  MySQL:    localhost:${mysql_port}"
+    INFO ""
+
+    if [[ "$detached" -eq 1 ]]; then
+        trap - EXIT INT TERM
+        INFO "Running in the background."
+        INFO "  Logs: $(basename "$0") logs   (or $LOGS_DIR)"
+        INFO "  Stop: $(basename "$0") down"
+        return 0
+    fi
+
+    INFO "Ctrl+C or '$(basename "$0") down' to stop."
+    wait
 }
 
 down() {
-
+    cd "$ROOT"
+    INFO "Stopping all services..."
+    _kill_component api
+    _kill_component www
+    make db.down
+    INFO "All services stopped."
 }

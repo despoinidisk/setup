@@ -1,13 +1,65 @@
 #!/usr/bin/env bash
 #
+# setup - Generic project lifecycle manager.
 #
+# Manages project services (start, stop, logs) through a project-specific
+# .setup hook file. The setup script itself is identical across all projects;
+# only .setup is modified per project.
+#
+# USAGE
+#     setup up [-d|--detach]   Start all services
+#     setup down               Stop all services
+#     setup logs               Tail service logs (detached mode only)
+#
+#     -d, --detach             Run services in the background
+#
+# SETUP FILE
+#     Create a .setup file in the project root defining up() and down():
+#
+#         up() {
+#             local detached="${1:-0}"
+#             _start_bg api "$detached" make api.start
+#             _wait_http "http://localhost:8000/health" "API"
+#         }
+#
+#         down() {
+#             _kill_component api
+#         }
+#
+# AVAILABLE UTILITIES (for use in .setup)
+#     Logging:
+#         INFO "message"        Log to stdout
+#         WARN "message"        Log to stderr
+#         ERRO "message"        Log to stderr
+#
+#     Process management:
+#         _start_bg NAME DETACHED CMD [ARGS...]
+#                             Start a command in the background, track its PID
+#         _kill_component NAME Stop a background process by component name
+#         _save_pid NAME PID   Save a PID file for a named component
+#         _wait_http URL LABEL [ATTEMPTS]
+#                             Poll an HTTP endpoint until it responds (default 90s)
+#
+#     Environment:
+#         _load_env            Source .env from the project root
+#
+#     Paths:
+#         ROOT                 Project root ($PWD)
+#         PIDS_DIR             PID files directory (.setup-pids/)
+#         LOGS_DIR             Log files directory (.setup-logs/)
+#
+# DIRECTORY STRUCTURE
+#     .setup                  Project-specific hooks (up, down)
+#     .setup-pids/            PID files for tracked processes
+#     .setup-logs/            Stdout/stderr logs from detached processes
 #
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$PWD"
 PIDS_DIR="$ROOT/.setup-pids"
 LOGS_DIR="$ROOT/.setup-logs"
+SETUP_FILE="$ROOT/.setup"
 mkdir -p "$PIDS_DIR" "$LOGS_DIR"
 
 LOG() {
@@ -91,62 +143,6 @@ _start_bg() {
     fi
 }
 
-down() {
-    cd "$ROOT"
-    INFO "Stopping all services..."
-    _kill_component api
-    _kill_component www
-    make db.down
-    INFO "All services stopped."
-}
-
-up() {
-    local detached="${1:-0}"
-    cd "$ROOT"
-
-    trap down EXIT INT TERM
-
-    INFO "Starting MySQL..."
-    make db.up
-    make db.wait
-    make migrate
-
-    _load_env
-    local api_port="${API_PORT:-8000}"
-    local site_port="${SITE_PORT:-3000}"
-    local mysql_port="${MYSQL_PORT:-3306}"
-
-    INFO "Starting API..."
-    _start_bg api "$detached" make api.start
-    _wait_http "http://127.0.0.1:${api_port}/health" "API"
-
-    if [[ ! -d "$ROOT/www/node_modules/next" ]]; then
-        INFO "Installing frontend dependencies..."
-        (cd "$ROOT/www" && npm install)
-    fi
-
-    INFO "Starting Frontend..."
-    _start_bg www "$detached" make www.dev
-    _wait_http "http://127.0.0.1:${site_port}/manager-api/health" "Frontend proxy"
-
-    INFO "All services started."
-    INFO "  API:      http://localhost:${api_port}"
-    INFO "  Frontend: http://localhost:${site_port}"
-    INFO "  MySQL:    localhost:${mysql_port}"
-    INFO ""
-
-    if [[ "$detached" -eq 1 ]]; then
-        trap - EXIT INT TERM
-        INFO "Running in the background."
-        INFO "  Logs: $(basename "$0") logs   (or $LOGS_DIR)"
-        INFO "  Stop: $(basename "$0") down"
-        return 0
-    fi
-
-    INFO "Ctrl+C or '$(basename "$0") down' to stop."
-    wait
-}
-
 logs() {
     cd "$ROOT"
     local api_log="$LOGS_DIR/api.log"
@@ -157,6 +153,18 @@ logs() {
     fi
     tail -n 80 -f "$api_log" "$www_log"
 }
+
+# ── Load project hooks ──────────────────────────────────────────────
+
+if [[ ! -f "$SETUP_FILE" ]]; then
+    ERRO "No .setup file found in $ROOT"
+    exit 1
+fi
+
+# shellcheck disable=SC1091
+source "$SETUP_FILE"
+
+# ── Command dispatch ────────────────────────────────────────────────
 
 case "${1:-}" in
     up)
