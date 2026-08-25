@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="https://raw.githubusercontent.com/despoinidisk/setup/refs/heads/main"
+REMOTE_FILE="$REPO/setup"
+TARGET="/usr/local/bin/setup"
+
+download() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL "$REMOTE_FILE" -o "$TARGET"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO "$TARGET" "$REMOTE_FILE"
+    else
+        echo "Error: curl or wget is required" >&2
+        exit 1
+    fi
+}
+
+if [[ ! -d /usr/local/bin ]] || [[ ! -w /usr/local/bin ]]; then
+    sudo bash -c "$(declare -f download); REMOTE_FILE='$REMOTE_FILE' TARGET='$TARGET' download"
+else
+    download
+fi
+
+chmod +x "$TARGET"
+echo "setup installed to $TARGET"

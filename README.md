@@ -26,6 +26,12 @@ setup logs
 setup down
 ```
 
+## Install
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/despoinidisk/setup/refs/heads/main/install)
+```
+
 ## How It Works
 
 1. Copy the `setup` script into your project root.

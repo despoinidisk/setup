@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
 # setup - Generic project lifecycle manager.
+# v1.0.0 (2026-08-25)
+# Konstantinos Despoinidis <despoinidis@lioncode.gr>
 #
 # Manages project services (start, stop, logs) through a project-specific
 # .setup hook file. The setup script itself is identical across all projects;
@@ -53,6 +55,7 @@
 #     .setup-pids/            PID files for tracked processes
 #     .setup-logs/            Stdout/stderr logs from detached processes
 #
+# NOTE: You should avoid modifying this script to change behaviour.
 
 set -euo pipefail
 
