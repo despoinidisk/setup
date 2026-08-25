@@ -17,10 +17,10 @@ download() {
 }
 
 if [[ ! -d /usr/local/bin ]] || [[ ! -w /usr/local/bin ]]; then
-    sudo bash -c "$(declare -f download); REMOTE_FILE='$REMOTE_FILE' TARGET='$TARGET' download"
+    sudo bash -c "$(declare -f download); REMOTE_FILE='$REMOTE_FILE' TARGET='$TARGET' download; chmod +x '$TARGET'"
 else
     download
+    chmod +x "$TARGET"
 fi
 
-chmod +x "$TARGET"
 echo "setup installed to $TARGET"
